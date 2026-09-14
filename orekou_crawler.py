@@ -21,13 +21,22 @@ orekou.net 統合クローラー。
 import json
 import argparse
 import sys
+from pathlib import Path
 
 from crawl_state import CrawlState
-from orekou_http import CircuitBreakerOpen, DailyBudgetExceeded
+from orekou_http import CircuitBreakerOpen, DailyBudgetExceeded, DEFAULT_INTERVAL, DEFAULT_JITTER
 from orekou_school_list_scraper import fetch_school_list
 from orekou_school_profile_scraper import fetch_school_profile
 from orekou_scraper import fetch_game_page
 from orekou_student_scraper import fetch_student_profile
+
+# orekou_http.py と同じ理由で、実行時のカレントディレクトリに依存させない。
+# ダブルクリック起動や別フォルダからの実行でも、常にこのスクリプトが置かれた
+# フォルダ内の同じファイルを見にいくようにする。
+_BASE_DIR = Path(__file__).resolve().parent
+DEFAULT_PROGRESS_PATH = str(_BASE_DIR / "crawl_progress.json")
+DEFAULT_MATCHES_PATH = str(_BASE_DIR / "matches.jsonl")
+DEFAULT_STUDENTS_PATH = str(_BASE_DIR / "students.jsonl")
 
 
 def append_jsonl(path: str, record: dict):
@@ -35,15 +44,17 @@ def append_jsonl(path: str, record: dict):
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def run(progress_path="crawl_progress.json",
-        matches_path="matches.jsonl",
-        students_path="students.jsonl",
+def run(progress_path=DEFAULT_PROGRESS_PATH,
+        matches_path=DEFAULT_MATCHES_PATH,
+        students_path=DEFAULT_STUDENTS_PATH,
         prefecture_ids=range(1, 48),
         max_games=10000,
-        interval=5.0,
-        jitter=2.0):
+        interval=DEFAULT_INTERVAL,
+        jitter=DEFAULT_JITTER):
 
     state = CrawlState(progress_path)
+    print(f"[起動] 進捗ファイル: {progress_path}")
+    print(f"       (前回の続きがあれば自動で再開します。既存の統計: {state.stats()})")
 
     try:
         _run_phases(state, matches_path, students_path, prefecture_ids,
@@ -144,7 +155,7 @@ def _run_phases(state, matches_path, students_path, prefecture_ids,
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--max-games", type=int, default=10000)
-    parser.add_argument("--interval", type=float, default=5.0)
-    parser.add_argument("--jitter", type=float, default=2.0)
+    parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL)
+    parser.add_argument("--jitter", type=float, default=DEFAULT_JITTER)
     args = parser.parse_args()
     run(max_games=args.max_games, interval=args.interval, jitter=args.jitter)
