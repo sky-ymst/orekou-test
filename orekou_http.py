@@ -34,25 +34,27 @@ from pathlib import Path
 
 import requests
 
-DEFAULT_INTERVAL = 5.0
-DEFAULT_JITTER = 2.0
-# 運営に個人研究目的の低頻度アクセスとして問い合わせ・許可済み(1秒1回未満)。
-# 身元は隠さず、"bot"という単語だけを避けた表記にしている
-# (一部サイトではUser-Agentに"bot"を含む文字列を機械的にブロックすることがあるため)。
+DEFAULT_INTERVAL = 2.0
+DEFAULT_JITTER = 1.0
 DEFAULT_USER_AGENT = (
-    "orekou-personal-research/1.0 "
-    "(individual, non-commercial research use; low-frequency access; "
-    "contact permitted via site help page)"
+    "orekou-research-bot/1.0 "
+    "(+practice-match archiver; personal research use; low-frequency access)"
 )
 DEFAULT_TIMEOUT = 15
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_CIRCUIT_BREAKER_THRESHOLD = 5     # 連続失敗がこの回数に達したら全体停止
-DEFAULT_DAILY_REQUEST_BUDGET = 10000      # 1日あたりの実リクエスト上限(安全弁)
+DEFAULT_DAILY_REQUEST_BUDGET = 20000      # 1日あたりの実リクエスト上限(安全弁)
 DEFAULT_429_MIN_WAIT = 60.0               # 429時、Retry-Afterが無い場合の最低待機秒数
 
-CACHE_DIR = Path("./orekou_http_cache")
-BUDGET_FILE = Path("./orekou_http_budget.json")
-LOG_FILE = Path("./orekou_http.log")
+# 実行時のカレントディレクトリ(cwd)に依存させない。
+# ダブルクリック起動・別フォルダからの実行・cron実行など、どこから呼ばれても
+# 「このスクリプトファイルが置かれているフォルダ」を基準に保存先を固定する。
+# (これが原因で「実行するたびに進捗が新規作成され、リセットされたように見える」
+#  という不具合が起きやすいため)
+_BASE_DIR = Path(__file__).resolve().parent
+CACHE_DIR = _BASE_DIR / "orekou_http_cache"
+BUDGET_FILE = _BASE_DIR / "orekou_http_budget.json"
+LOG_FILE = _BASE_DIR / "orekou_http.log"
 
 _last_request_ts = 0.0
 _session = None
@@ -80,24 +82,9 @@ if not logger.handlers:
 
 
 def _get_session() -> requests.Session:
-    """
-    requests.Session を作成する。
-
-    Windows環境(特にPython 3.14系)では、OSに証明書は存在するのに
-    requests/urllib3側がそれを見つけられず SSLCertVerificationError
-    (certificate verify failed: unable to get local issuer certificate)
-    になるケースがある。certifi パッケージが入っていれば、その証明書束の
-    パスを明示的に session.verify に指定することで回避できるため、
-    certifi が使える場合は優先して使う。
-    """
     global _session
     if _session is None:
         _session = requests.Session()
-        try:
-            import certifi
-            _session.verify = certifi.where()
-        except ImportError:
-            pass  # certifi 未インストールなら requests 標準の挙動に任せる
     return _session
 
 
