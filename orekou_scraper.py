@@ -109,124 +109,64 @@ def _parse_player_link(a_tag) -> dict:
     }
 
 
-def _parse_lineup_table(table, warnings: list = None) -> dict:
+def _parse_lineup_table(table) -> dict:
     """
     先発+控えの一覧テーブルを解析。
     先発: 打順・守備位置・調子・才・選手・投・打
     控え: display:none行。打順/守備位置は"-"。
-
-    列数が7以外(想定と違うレイアウト)でも、選手リンクの位置さえ特定できれば
-    可能な範囲で抽出を続ける。完全に読めない行はスキップしつつ warnings に記録する。
     """
     starters, bench = [], []
-    if table is None:
-        if warnings is not None:
-            warnings.append("lineup_table_missing")
-        return {"starters": starters, "bench": bench}
-
     rows = table.find_all("tr")
     in_bench = False
     for tr in rows:
         if tr.find("th"):
             continue
-        # 「+ベンチ」の行(colspan=7)を境に切り替え。colspanの具体的な数値が
-        # 将来変わっても検知できるよう、「th以外のセルが1つだけの行」も
-        # 区切り行の候補として扱う。
-        cells = tr.find_all("td")
-        if len(cells) == 1 and ("ベンチ" in cells[0].get_text() or cells[0].get("colspan")):
+        # 「+ベンチ」の行(colspan=7)を境に切り替え
+        if tr.find("td", colspan="7"):
             in_bench = True
             continue
 
-        if len(cells) < 5:
-            # 想定より列が少ない行は解析不能。選手リンクの有無だけ確認し、
-            # あれば警告付きで記録、無ければ単なる区切り/空行として静かにスキップ。
-            if warnings is not None and tr.find("a", href=STUDENT_LINK_RE):
-                warnings.append(f"lineup_row_too_few_cells:{len(cells)}")
+        cells = tr.find_all("td")
+        if len(cells) < 7:
             continue
 
-        # 選手名セル(リンクを含むセル)を探す。列構成が7列と違う場合に備え、
-        # 固定インデックスではなくリンクの位置から特定する。
-        name_cell = None
-        name_idx = None
-        for idx, c in enumerate(cells):
-            if c.find("a", href=STUDENT_LINK_RE):
-                name_cell = c
-                name_idx = idx
-                break
-
-        if name_cell is None:
-            continue
+        order, pos_cell, cond_cell, rarity_cell, name_cell, throw_cell, bat_cell = cells[:7]
 
         a = name_cell.find("a", href=STUDENT_LINK_RE)
         player = _parse_player_link(a)
         if not player:
             continue
 
-        # 想定の7列レイアウト(打順・守備位置・調子・才・選手・投・打)であれば
-        # 通常どおり各項目を埋める。ずれている場合は取得できる範囲のみ埋め、
-        # 欠けた項目は None のままにして warnings に記録する。
-        if name_idx == 4 and len(cells) >= 7:
-            order, pos_cell, cond_cell, rarity_cell = cells[0], cells[1], cells[2], cells[3]
-            throw_cell, bat_cell = cells[5], cells[6]
-            pos_tag = pos_cell.find("b")
-            cond_img = cond_cell.find("img")
-            rarity_span = rarity_cell.find("span")
-            entry = {
-                **player,
-                "batting_order": _clean_text(order.get_text()) if not in_bench else None,
-                "position": pos_tag.get_text(strip=True) if pos_tag else None,
-                "condition": cond_img.get("alt") if cond_img else None,
-                "rarity": rarity_span.get_text(strip=True) if rarity_span else None,
-                "throws": _clean_text(throw_cell.get_text()),
-                "bats": _clean_text(bat_cell.get_text()),
-            }
-        else:
-            if warnings is not None:
-                warnings.append(f"lineup_row_unexpected_layout:name_idx={name_idx},cells={len(cells)}")
-            entry = {
-                **player,
-                "batting_order": None,
-                "position": None,
-                "condition": None,
-                "rarity": None,
-                "throws": None,
-                "bats": None,
-            }
+        pos_tag = pos_cell.find("b")
+        cond_img = cond_cell.find("img")
+        rarity_span = rarity_cell.find("span")
+
+        entry = {
+            **player,
+            "batting_order": _clean_text(order.get_text()) if not in_bench else None,
+            "position": pos_tag.get_text(strip=True) if pos_tag else None,
+            "condition": cond_img.get("alt") if cond_img else None,
+            "rarity": rarity_span.get_text(strip=True) if rarity_span else None,
+            "throws": _clean_text(throw_cell.get_text()),
+            "bats": _clean_text(bat_cell.get_text()),
+        }
         (bench if in_bench else starters).append(entry)
 
     return {"starters": starters, "bench": bench}
 
 
-def _parse_stat_table(table, stat_keys, warnings: list = None) -> list:
-    """打撃成績/投手成績テーブル(1行=1選手)を解析。
-    テーブルが存在しない/空/ヘッダーだけ、といったケースでもクラッシュしない。"""
+def _parse_stat_table(table, stat_keys) -> list:
+    """打撃成績/投手成績テーブル(1行=1選手)を解析。空・ヘッダ無しテーブルは[]。"""
     records = []
-    if table is None:
-        return records
-
     header_row = table.find("tr")
     if header_row is None:
-        if warnings is not None:
-            warnings.append("stat_table_no_header_row")
         return records
-
     header_cells = [th.get_text(strip=True) for th in header_row.find_all("th")]
     if not header_cells:
-        if warnings is not None:
-            warnings.append("stat_table_no_th_in_header_row")
         return records
-
     for tr in table.find_all("tr")[1:]:
         cells = tr.find_all("td")
-        if not cells:
-            continue
         if len(cells) != len(header_cells):
-            # 列数がヘッダーとずれている行はスキップするが、選手リンクが
-            # 含まれていた場合は取りこぼしとして記録しておく。
-            if warnings is not None and tr.find("a", href=STUDENT_LINK_RE):
-                warnings.append(
-                    f"stat_row_column_mismatch:expected={len(header_cells)},got={len(cells)}"
-                )
             continue
         a = cells[0].find("a", href=STUDENT_LINK_RE)
         player = _parse_player_link(a)
@@ -254,7 +194,7 @@ def parse_game_page(html: str) -> dict:
             data["date"] = text
             break
     if data["date"] is None:
-        warnings.append("date_not_found")
+        warnings.append("日付を特定できませんでした")
 
     match_type_a = soup.find("a", href=lambda h: h and (
         OFFICIAL_MATCH_MARK in h or PRACTICE_MATCH_MARK in h))
@@ -262,23 +202,16 @@ def parse_game_page(html: str) -> dict:
     data["match_type_url"] = match_type_a["href"] if match_type_a else None
     data["is_official"] = bool(match_type_a and OFFICIAL_MATCH_MARK in match_type_a["href"])
     if match_type_a is None:
-        warnings.append("match_type_not_found")
+        warnings.append("公式戦/練習試合の判定リンクが見つかりませんでした(is_officialは不確定)")
 
     # --- 対戦校 (school_id, name) ---
     school_links = soup.find_all("a", href=SCHOOL_LINK_RE)
     teams_meta = []
-    seen_school_ids = set()
-    for a in school_links:
+    for a in school_links[:2]:
         m = SCHOOL_LINK_RE.match(a["href"])
-        sid = m.group(1)
-        if sid in seen_school_ids:
-            continue
-        seen_school_ids.add(sid)
-        teams_meta.append({"school_id": sid, "school_name": a.get_text(strip=True)})
-        if len(teams_meta) == 2:
-            break
+        teams_meta.append({"school_id": m.group(1), "school_name": a.get_text(strip=True)})
     if len(teams_meta) < 2:
-        warnings.append(f"teams_meta_incomplete:found={len(teams_meta)}")
+        warnings.append(f"対戦校リンクが{len(teams_meta)}件しか見つかりませんでした(通常2件)")
 
     # --- スコアボード ---
     scoreboard = _extract_final_scoreboard(soup)
@@ -286,71 +219,55 @@ def parse_game_page(html: str) -> dict:
     innings_bot = _extract_innings(soup, "bot")
 
     basic_tables = soup.select("table.basic")
-    if not basic_tables:
-        warnings.append("no_basic_tables_found")
-
-    # 打線表は th に「打」「守」「調」...を含むテーブルとして識別する。
-    # 完全一致だと列順や表記の微差で1つも拾えなくなるため、まず主要ラベルの
-    # 部分一致で判定する(順序に依存しない)。それでも見つからない場合は、
-    # 「選手」列と守備位置っぽい列を含むテーブルを緩い条件でフォールバック識別する。
-    LINEUP_HEADER_REQUIRED = {"選手"}
-    LINEUP_HEADER_HINTS = {"打", "守", "調", "才"}
-
+    # 打線表は「才(レアリティ)」「調(調子)」の両方を持つtableとして識別する。
+    # 列の並び順や追加列があっても壊れないよう、先頭5列の完全一致ではなく
+    # 必須列の存在で判定する。
     lineup_tables = []
     for t in basic_tables:
-        th_texts = {th.get_text(strip=True) for th in t.find_all("th")}
-        if LINEUP_HEADER_REQUIRED <= th_texts and len(th_texts & LINEUP_HEADER_HINTS) >= 2:
+        th_texts = [th.get_text(strip=True) for th in t.find_all("th")]
+        if "才" in th_texts and "調" in th_texts:
             lineup_tables.append(t)
-
     if len(lineup_tables) < 2:
-        warnings.append(f"lineup_tables_found:{len(lineup_tables)} (expected 2)")
+        warnings.append(f"打線表が{len(lineup_tables)}件しか見つかりませんでした(通常2件。"
+                         f"不戦勝・中止試合等の可能性があります)")
 
     # 打撃成績/投手成績テーブルはIDで直接特定できる
     def find_by_id(id_):
         el = soup.find(id=id_)
-        if el is None:
-            return None
-        found = el.find("table", class_="basic")
-        return found
+        return el.find("table", class_="basic") if el else None
 
     teams = []
     suffixes = ["top", "bot"]
     for i, suffix in enumerate(suffixes):
         meta = teams_meta[i] if i < len(teams_meta) else {}
-        if not meta:
-            warnings.append(f"team_meta_missing_for_side:{suffix}")
-        lineup_table = lineup_tables[i] if i < len(lineup_tables) else None
-        lineup = _parse_lineup_table(lineup_table, warnings=warnings)
+        lineup = _parse_lineup_table(lineup_tables[i]) if i < len(lineup_tables) else {"starters": [], "bench": []}
+        if lineup["starters"] and len(lineup["starters"]) != 9:
+            warnings.append(f"{suffix}チームの先発人数が{len(lineup['starters'])}人でした(通常9人)")
 
         batting_table = find_by_id(f"f_record_area_{suffix}")
         pitching_table = find_by_id(f"p_record_area_{suffix}")
         if batting_table is None:
-            warnings.append(f"batting_table_missing:{suffix}")
+            warnings.append(f"{suffix}チームの打撃成績テーブルが見つかりませんでした")
         if pitching_table is None:
-            warnings.append(f"pitching_table_missing:{suffix}")
+            warnings.append(f"{suffix}チームの投手成績テーブルが見つかりませんでした")
 
         batting_stats = _parse_stat_table(
             batting_table,
             ["打席", "打数", "安打", "本塁打", "打点", "得点", "犠飛", "犠打", "四球", "死球", "三振", "盗塁"],
-            warnings=warnings,
-        )
+        ) if batting_table else []
         pitching_stats = _parse_stat_table(
             pitching_table,
             ["球数", "投球回", "失点", "自責点", "防御率", "与死球", "与四球", "被安打", "被本塁打", "奪三振"],
-            warnings=warnings,
-        )
+        ) if pitching_table else []
 
         # 投球回(例: "2 1/3")を10進数に変換する。元表記も "投球回_表記" として残す。
         for rec in pitching_stats:
             raw = rec.get("投球回")
             rec["投球回_表記"] = raw
-            if raw:
-                parsed = _parse_innings_pitched(raw)
-                if parsed is None:
-                    warnings.append(f"innings_pitched_unparsable:{raw!r}")
-                rec["投球回"] = parsed
-            else:
-                rec["投球回"] = None
+            decimal_val = _parse_innings_pitched(raw) if raw else None
+            if raw and decimal_val is None:
+                warnings.append(f"投球回の変換に失敗しました: {rec.get('name')} 表記='{raw}'")
+            rec["投球回"] = decimal_val
 
         teams.append({
             "side": suffix,  # "top"=先攻(通常アウェイ), "bot"=後攻(通常ホーム)
@@ -377,19 +294,6 @@ def parse_game_page(html: str) -> dict:
                 player_ids.add((p["school_id"], p["student_number"]))
     data["player_ids"] = sorted(player_ids)
     data["player_count"] = len(player_ids)
-
-    # --- 簡易な内部整合性チェック(パース時点で分かる範囲) ---
-    # 先発が極端に少ない(通常は9人)場合は、打線表の読み取り漏れの可能性が高い。
-    for team in teams:
-        starter_count = len(team["starters"])
-        if starter_count not in (0, 9) and team["starters"] is not None:
-            # 0人は「打線表自体が見つからなかった」ケースで別途 lineup_tables_found
-            # 警告が出ているはずなので、ここでは主に「見つかったが人数がおかしい」を拾う
-            if starter_count > 0:
-                warnings.append(
-                    f"unexpected_starter_count:side={team['side']},count={starter_count}"
-                )
-
     data["parse_warnings"] = warnings
 
     return data
